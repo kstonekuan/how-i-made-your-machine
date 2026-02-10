@@ -47,28 +47,40 @@ Better modeled:
   <TabItem value="typescript" label="TypeScript">
 
 ```ts
-type Status = "draft" | "published" | "archived";
+// Bad: unconstrained string allows invalid values.
+const underModeledStatus: string = "draff";
 
-const status: Status = "draft";
+// Good: finite union prevents invalid states.
+type Status = "draft" | "published" | "archived";
+const modeledStatus: Status = "draft";
 ```
 
   </TabItem>
   <TabItem value="rust" label="Rust">
 
 ```rust
+// Bad: free-form string can carry invalid values.
+let under_modeled_status = "draff";
+
+// Good: enum constrains the value set.
 enum Status {
     Draft,
     Published,
     Archived,
 }
 
-let status = Status::Draft;
+let modeled_status = Status::Draft;
+let _ = (under_modeled_status, modeled_status);
 ```
 
   </TabItem>
   <TabItem value="python" label="Python">
 
 ```python
+# Bad: unconstrained string allows invalid values.
+under_modeled_status: str = "draff"
+
+# Good: StrEnum constrains valid values.
 from enum import StrEnum
 
 class Status(StrEnum):
@@ -76,7 +88,7 @@ class Status(StrEnum):
     PUBLISHED = "published"
     ARCHIVED = "archived"
 
-status: Status = Status.DRAFT
+modeled_status: Status = Status.DRAFT
 ```
 
   </TabItem>
@@ -102,33 +114,65 @@ Better modeled:
   <TabItem value="typescript" label="TypeScript">
 
 ```ts
-type ContentState = "draft" | "published" | "archived";
+// Bad: boolean combinations allow impossible states.
+const isDraft = true;
+const isPublished = true;
+const isArchived = false;
 
+// Good: one variant encodes one valid state.
+type ContentState = "draft" | "published" | "archived";
 const contentState: ContentState = "published";
+void [isDraft, isPublished, isArchived];
 ```
 
   </TabItem>
   <TabItem value="rust" label="Rust">
 
 ```rust
+// Bad: booleans can contradict each other.
+struct UnderModeledContentState {
+    is_draft: bool,
+    is_published: bool,
+    is_archived: bool,
+}
+
+// Good: enum enforces one state at a time.
 enum ContentState {
     Draft,
     Published,
     Archived,
 }
 
-let content_state = ContentState::Published;
+let under_modeled_content_state = UnderModeledContentState {
+    is_draft: true,
+    is_published: true,
+    is_archived: false,
+};
+let modeled_content_state = ContentState::Published;
+let _ = (
+    under_modeled_content_state.is_draft,
+    under_modeled_content_state.is_published,
+    under_modeled_content_state.is_archived,
+    modeled_content_state,
+);
 ```
 
   </TabItem>
   <TabItem value="python" label="Python">
 
 ```python
+# Bad: booleans can represent impossible combinations.
+is_draft = True
+is_published = True
+is_archived = False
+
+# Good: Literal constrains to one valid state.
 from typing import Literal
 
 ContentState = Literal["draft", "published", "archived"]
 
 content_state: ContentState = "published"
+_ = (is_draft, is_published, is_archived, content_state)
 ```
 
   </TabItem>
@@ -153,11 +197,21 @@ Better modeled:
   <TabItem value="typescript" label="TypeScript">
 
 ```ts
+// Bad: primitives hide domain intent and allow contradictions.
+function scheduleMessageUnderModeled(
+  channel: string,
+  isImmediate: boolean,
+  isScheduled: boolean,
+): void {
+  void [channel, isImmediate, isScheduled];
+}
+
+// Good: explicit domain types make valid states clear.
 type Channel = "email" | "sms" | "push";
 type DeliveryMode = "immediate" | "scheduled";
 
 function scheduleMessage(channel: Channel, deliveryMode: DeliveryMode): void {
-  // ...
+  void [channel, deliveryMode];
 }
 ```
 
@@ -165,6 +219,12 @@ function scheduleMessage(channel: Channel, deliveryMode: DeliveryMode): void {
   <TabItem value="rust" label="Rust">
 
 ```rust
+// Bad: primitives allow invalid channels and conflicting mode flags.
+fn schedule_message_under_modeled(channel: &str, is_immediate: bool, is_scheduled: bool) {
+    let _ = (channel, is_immediate, is_scheduled);
+}
+
+// Good: domain enums constrain function inputs.
 enum Channel {
     Email,
     Sms,
@@ -185,6 +245,15 @@ fn schedule_message(channel: Channel, delivery_mode: DeliveryMode) {
   <TabItem value="python" label="Python">
 
 ```python
+# Bad: primitive inputs accept invalid values and contradictory flags.
+def schedule_message_under_modeled(
+    channel: str,
+    is_immediate: bool,
+    is_scheduled: bool,
+) -> None:
+    _ = (channel, is_immediate, is_scheduled)
+
+# Good: domain literals constrain allowed values.
 from typing import Literal
 
 Channel = Literal["email", "sms", "push"]
@@ -204,6 +273,84 @@ def schedule_message(channel: Channel, delivery_mode: DeliveryMode) -> None:
 - Add comments only for non-obvious decisions, invariants, or tradeoffs.
 - Avoid comments that restate what code already makes obvious.
 
+### Example 4: Document the Why, Not the Obvious What
+
+<Tabs groupId="documenting-why">
+  <TabItem value="pseudocode" label="Pseudocode" default>
+
+```text
+Low-value comment:
+  // Increment retry count
+  retry_count = retry_count + 1
+
+High-value comment:
+  // Billing provider closes refunds at next-day midnight, so keep a one-day grace period.
+  refund_grace_period_days = 1
+  is_refund_eligible = days_since_purchase <= refund_window_days + refund_grace_period_days
+```
+
+  </TabItem>
+  <TabItem value="typescript" label="TypeScript">
+
+```ts
+// Bad: restates obvious code behavior without context.
+function incrementRetryCount(retryCount: number): number {
+  // Increment retry count.
+  return retryCount + 1;
+}
+
+// Good: documents a non-obvious business constraint.
+function isRefundEligible(
+  daysSincePurchase: number,
+  refundWindowDays: number,
+): boolean {
+  // Billing provider closes refunds at next-day midnight, so we keep a one-day grace period.
+  const refundGracePeriodInDays = 1;
+  return daysSincePurchase <= refundWindowDays + refundGracePeriodInDays;
+}
+```
+
+  </TabItem>
+  <TabItem value="rust" label="Rust">
+
+```rust
+// Bad: restates obvious behavior.
+fn increment_retry_count(retry_count: u32) -> u32 {
+    // Increment retry count.
+    retry_count + 1
+}
+
+// Good: documents a non-obvious business constraint.
+fn is_refund_eligible(days_since_purchase: u32, refund_window_days: u32) -> bool {
+    // Billing provider closes refunds at next-day midnight, so we keep a one-day grace period.
+    let refund_grace_period_in_days = 1;
+    days_since_purchase <= refund_window_days + refund_grace_period_in_days
+}
+
+let _ = increment_retry_count(0);
+```
+
+  </TabItem>
+  <TabItem value="python" label="Python">
+
+```python
+# Bad: restates obvious behavior.
+def increment_retry_count(retry_count: int) -> int:
+    # Increment retry count.
+    return retry_count + 1
+
+# Good: documents a non-obvious business constraint.
+def is_refund_eligible(days_since_purchase: int, refund_window_days: int) -> bool:
+    # Billing provider closes refunds at next-day midnight, so we keep a one-day grace period.
+    refund_grace_period_in_days = 1
+    return days_since_purchase <= refund_window_days + refund_grace_period_in_days
+
+_ = increment_retry_count(0)
+```
+
+  </TabItem>
+</Tabs>
+
 ## Testing Standards (Business Logic First)
 
 - Test business outcomes and domain behavior first.
@@ -212,6 +359,150 @@ def schedule_message(channel: Channel, delivery_mode: DeliveryMode) -> None:
 - Avoid mocks by default.
 - Use mocks only for unstable boundaries (network, filesystem, time, OS/process boundaries).
 - Assert externally meaningful behavior, not private implementation details.
+
+### Example 5: Test State Transitions and Outcomes
+
+<Tabs groupId="testing-behavior">
+  <TabItem value="pseudocode" label="Pseudocode" default>
+
+```text
+Brittle:
+  assert transition_helper_called_once()
+
+Behavior-focused:
+  result = transition_order_state("draft", "publish")
+  assert result == "published"
+```
+
+  </TabItem>
+  <TabItem value="typescript" label="TypeScript">
+
+```ts
+import { describe, expect, it } from "vitest";
+
+describe("transitionOrderStateUnderTest", () => {
+  it("bad: asserts an implementation detail", () => {
+    const transitionHelperCallCount = 1;
+    expect(transitionHelperCallCount).toBe(1);
+  });
+});
+
+describe("transitionOrderState", () => {
+  it("good: asserts observable state transition", () => {
+    const nextState = transitionOrderState("draft", "publish");
+    expect(nextState).toBe("published");
+  });
+});
+```
+
+  </TabItem>
+  <TabItem value="rust" label="Rust">
+
+```rust
+#[test]
+fn bad_asserts_implementation_detail_only() {
+    let transition_helper_call_count = 1;
+    assert_eq!(transition_helper_call_count, 1);
+}
+
+#[test]
+fn good_transitions_draft_to_published_when_publish_is_requested() {
+    let next_state = transition_order_state("draft", "publish");
+    assert_eq!(next_state, "published");
+}
+```
+
+  </TabItem>
+  <TabItem value="python" label="Python">
+
+```python
+def test_bad_asserts_implementation_detail_only() -> None:
+    transition_helper_call_count = 1
+    assert transition_helper_call_count == 1
+
+def test_good_transition_order_state_moves_draft_to_published() -> None:
+    next_state = transition_order_state("draft", "publish")
+    assert next_state == "published"
+```
+
+  </TabItem>
+</Tabs>
+
+### Example 6: Mock Only Unstable Boundaries
+
+<Tabs groupId="testing-mocks">
+  <TabItem value="pseudocode" label="Pseudocode" default>
+
+```text
+Preferred:
+  fake_clock = FixedClock("2025-01-01T00:00:00Z")
+  assert discount_is_active(fake_clock)
+
+Avoid:
+  assert internal_helper_called("calculate_discount_window")
+```
+
+  </TabItem>
+  <TabItem value="typescript" label="TypeScript">
+
+```ts
+import { expect, it, vi } from "vitest";
+
+it("bad: mocks an internal helper and asserts internals", () => {
+  const calculateDiscountWindow = vi.fn().mockReturnValue(true);
+  calculateDiscountWindow();
+  expect(calculateDiscountWindow).toHaveBeenCalledTimes(1);
+});
+
+it("good: mocks only unstable network boundary and asserts behavior", async () => {
+  const fetchExchangeRate = vi.fn().mockRejectedValue(new Error("timeout"));
+  const gateway = createCurrencyGateway({ fetchExchangeRate });
+
+  const rate = await gateway.getRateOrFallback("USD", "EUR");
+
+  expect(rate).toBe(0.92);
+});
+```
+
+  </TabItem>
+  <TabItem value="rust" label="Rust">
+
+```rust
+#[test]
+fn bad_asserts_internal_helper_behavior() {
+    let internal_helper_call_count = 1;
+    assert_eq!(internal_helper_call_count, 1);
+}
+
+#[test]
+fn good_uses_cached_rate_when_live_lookup_fails() {
+    let gateway = CurrencyGateway::new(FailingRateClient, CachedRateStore::with_rate(0.92));
+    let rate = gateway.get_rate_or_fallback("USD", "EUR");
+    assert_eq!(rate, 0.92);
+}
+```
+
+  </TabItem>
+  <TabItem value="python" label="Python">
+
+```python
+def test_bad_asserts_internal_helper_behavior() -> None:
+    internal_helper_call_count = 1
+    assert internal_helper_call_count == 1
+
+def test_good_uses_cached_rate_when_live_lookup_fails() -> None:
+    gateway = CurrencyGateway(
+        rate_client=FailingRateClient(),
+        cache_store=CachedRateStore(rate=0.92),
+    )
+
+    rate = gateway.get_rate_or_fallback("USD", "EUR")
+
+    assert rate == 0.92
+```
+
+  </TabItem>
+</Tabs>
 
 ## Exceptions
 
@@ -222,3 +513,112 @@ When taking an exception, document:
 - Which rule is being bent
 - Why
 - Which safeguards are in place (validation, logging, tests)
+
+### Example 7: External Contract Requires Looser Typing
+
+<Tabs groupId="exceptions">
+  <TabItem value="pseudocode" label="Pseudocode" default>
+
+```text
+Rule being bent:
+  "Finite value set -> union/enum instead of string"
+
+Why:
+  Partner webhook sends undocumented status values.
+
+Safeguards:
+  validate known values
+  map unknown values to UnknownPartnerStatus
+  log raw unknown values
+  test known and unknown inputs
+```
+
+  </TabItem>
+  <TabItem value="typescript" label="TypeScript">
+
+```ts
+// Bad: assumes external input already matches strict known values.
+type UnderModeledPartnerStatus = "accepted" | "rejected";
+
+function parsePartnerStatus(rawPartnerStatus: UnderModeledPartnerStatus): UnderModeledPartnerStatus {
+  return rawPartnerStatus;
+}
+
+// Good: accept string input, validate known values, and map unknown values explicitly.
+type KnownPartnerStatus = "accepted" | "rejected";
+type PartnerStatus = KnownPartnerStatus | "unknown_partner_status";
+
+function mapPartnerStatus(rawPartnerStatus: string): PartnerStatus {
+  if (rawPartnerStatus === "accepted" || rawPartnerStatus === "rejected") {
+    return rawPartnerStatus;
+  }
+
+  console.warn("unknown partner status", { rawPartnerStatus });
+  return "unknown_partner_status";
+}
+```
+
+  </TabItem>
+  <TabItem value="rust" label="Rust">
+
+```rust
+// Bad: panics on unexpected partner status values.
+enum UnderModeledPartnerStatus {
+    Accepted,
+    Rejected,
+}
+
+fn parse_partner_status(raw_partner_status: &str) -> UnderModeledPartnerStatus {
+    match raw_partner_status {
+        "accepted" => UnderModeledPartnerStatus::Accepted,
+        "rejected" => UnderModeledPartnerStatus::Rejected,
+        _ => panic!("unsupported partner status: {raw_partner_status}"),
+    }
+}
+
+// Good: capture unknown values explicitly and continue safely.
+enum PartnerStatus {
+    Accepted,
+    Rejected,
+    UnknownPartnerStatus,
+}
+
+fn map_partner_status(raw_partner_status: &str) -> PartnerStatus {
+    match raw_partner_status {
+        "accepted" => PartnerStatus::Accepted,
+        "rejected" => PartnerStatus::Rejected,
+        _ => {
+            eprintln!("unknown partner status: {raw_partner_status}");
+            PartnerStatus::UnknownPartnerStatus
+        }
+    }
+}
+
+let _ = parse_partner_status("accepted");
+```
+
+  </TabItem>
+  <TabItem value="python" label="Python">
+
+```python
+from typing import Literal
+
+# Bad: assumes the partner only ever sends known values.
+UnderModeledPartnerStatus = Literal["accepted", "rejected"]
+
+def parse_partner_status(raw_partner_status: UnderModeledPartnerStatus) -> UnderModeledPartnerStatus:
+    return raw_partner_status
+
+# Good: accept raw string input and map unknown values explicitly.
+PartnerStatus = Literal["accepted", "rejected", "unknown_partner_status"]
+
+def map_partner_status(raw_partner_status: str) -> PartnerStatus:
+    if raw_partner_status in {"accepted", "rejected"}:
+        return raw_partner_status
+
+    print(f"unknown partner status: {raw_partner_status}")
+    return "unknown_partner_status"
+```
+
+  </TabItem>
+</Tabs>
