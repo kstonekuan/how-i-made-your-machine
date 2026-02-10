@@ -8,6 +8,7 @@ src = "src"
 build-dir = "book"
 
 [output.html]
+git-repository-url = "https://github.com/kstonekuan/how-i-made-your-machine"
 additional-css = ["theme/language-tabs.css"]
 additional-js = ["theme/language-tabs.js"]
 

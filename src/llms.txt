@@ -1,6 +1,6 @@
 # How I Made Your Machine
 
-> Personal coding style guide focused on maintainability, type safety, and behavior-first testing.
+> This is my coding style guide: how we should build for maintainability, type safety, and behavior-first testing.
 
 ## Docs
 

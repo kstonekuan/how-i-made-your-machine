@@ -4,8 +4,8 @@ _This is the style guide: the story of how I made your machine._
 
 ## Purpose
 
-This document defines coding standards for maintainability, type safety, and behavior-focused testing across projects.
-It sets strong defaults, with explicit room for justified exceptions.
+This guide lays out how we should write code for maintainability, type safety, and behavior-first testing across projects.
+It sets strong defaults, with room for justified exceptions when the tradeoff is clear.
 
 ## Core Principles
 
@@ -15,19 +15,25 @@ It sets strong defaults, with explicit room for justified exceptions.
 - Optimize for readable intent over clever implementation.
 - Test business behavior rather than framework or library internals.
 
-## Type System and Compiler Standards
+## Type Safety and Relying on the Compiler
+
+Using a type-safe language is not enough on its own.
+We have to be intentional about how we model data and behavior so the compiler and static analysis can do real work for us.
+It is easy to write code that technically type-checks while still side-stepping most of those guarantees.
+
+Here are some patterns that are useful to follow:
 
 - Prefer domain types over raw strings and loosely typed containers.
 - Use unions/enums/typed variants when valid values are finite.
-- Use exhaustive pattern matching where possible.
+- Favor exhaustive pattern matching where possible.
 - Represent unknown external values explicitly (`Unknown*`) instead of falling back silently.
 - Avoid weakening types (`any`, broad casts, untyped flows) unless unavoidable.
 
 ### Type Design Signals
 
-- Finite value set -> union/enum instead of `string`
-- Mutually exclusive states -> one state union/enum instead of multiple booleans
-- Function inputs representing domain concepts -> use those domain types directly
+- If the value set is finite, use a union/enum instead of `string`.
+- If states are mutually exclusive, use one state union/enum instead of multiple booleans.
+- If function inputs represent domain concepts, use those domain types directly.
 
 ### Example 1: Finite Value Set as Variants
 
@@ -266,7 +272,10 @@ def schedule_message(channel: Channel, delivery_mode: DeliveryMode) -> None:
   </TabItem>
 </Tabs>
 
-## Self-Documenting Code Standards
+## Self-Documenting Code
+
+Self-documenting code is usually better than writing comments everywhere.
+Comments go stale quickly, while clear naming and structure have to evolve with the program.
 
 - Prefer descriptive, domain-aligned names even when verbose.
 - Keep function and type names intention-revealing.
@@ -351,7 +360,10 @@ _ = increment_retry_count(0)
   </TabItem>
 </Tabs>
 
-## Testing Standards (Business Logic First)
+## Testing Business Logic First
+
+Tests are important for verifying behavior and preventing regression at both unit and integration levels.
+But we should avoid writing tests for the sake of writing tests: they add maintenance cost and create noise when they assert outcomes that do not matter to business behavior.
 
 - Test business outcomes and domain behavior first.
 - Prioritize tests for state transitions, input-to-output rules, defaults, and fallback behavior.
@@ -506,9 +518,9 @@ def test_good_uses_cached_rate_when_live_lookup_fails() -> None:
 
 ## Exceptions
 
-Exceptions are acceptable when strict modeling creates disproportionate complexity, external contracts require looser typing, or performance/interoperability constraints apply.
+We can make exceptions when strict modeling creates disproportionate complexity, external contracts require looser typing, or performance/interoperability constraints apply.
 
-When taking an exception, document:
+When we take an exception, we should document:
 
 - Which rule is being bent
 - Why

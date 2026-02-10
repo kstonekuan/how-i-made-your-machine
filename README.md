@@ -1,7 +1,7 @@
 # How I Made Your Machine
 
 mdBook site for publishing my personal coding style guide.
-Includes a repository-owned Rust preprocessor for Docusaurus-style language tabs.
+This repo also includes a Rust preprocessor for Docusaurus-style language tabs.
 
 ## Local development
 
