@@ -1,0 +1,16 @@
+[book]
+title = "How I Made Your Machine"
+description = "Personal Coding Style Guide"
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+additional-css = ["theme/language-tabs.css"]
+additional-js = ["theme/language-tabs.js"]
+
+[preprocessor.language-tabs]
+command = "./target/debug/mdbook-language-tabs-preprocessor"
+renderer = ["html"]

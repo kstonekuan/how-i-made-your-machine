@@ -1,0 +1,8 @@
+# How I Made Your Machine
+
+> Personal coding style guide focused on maintainability, type safety, and behavior-first testing.
+
+## Docs
+
+- [Style Guide (HTML)](./): Canonical rendered guide.
+- [Style Guide (Markdown)](./style-guide.md.txt): Raw markdown source for LLM/tool ingestion.
