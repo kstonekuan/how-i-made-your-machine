@@ -11,6 +11,8 @@ build-dir = "book"
 git-repository-url = "https://github.com/kstonekuan/how-i-made-your-machine"
 additional-css = ["theme/language-tabs.css"]
 additional-js = ["theme/language-tabs.js"]
+default-theme = "rust"
+preferred-dark-theme = "ayu"
 
 [preprocessor.language-tabs]
 command = "./target/debug/mdbook-language-tabs-preprocessor"
