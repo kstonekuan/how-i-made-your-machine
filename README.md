@@ -28,3 +28,11 @@ cargo check --workspace
 
 - `/llms.txt`
 - `/style-guide.md.txt`
+
+## Install as a Skill
+
+Install the packaged skill from this repo with:
+
+```bash
+npx skills add kstonekuan/how-i-made-your-machine/skills/how-i-made-your-machine
+```
