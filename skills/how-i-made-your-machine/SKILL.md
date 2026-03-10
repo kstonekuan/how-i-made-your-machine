@@ -5,7 +5,7 @@ description: Apply the "How I Made Your Machine" coding style guide to implement
 
 # How I Made Your Machine
 
-_This is the style guide: the story of how I made your machine._
+_A guide to writing software for humans and agents: the story of how I made your machine._
 
 ## Agent Usage
 

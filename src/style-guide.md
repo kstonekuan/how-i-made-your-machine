@@ -1,6 +1,6 @@
 # How I Made Your Machine
 
-_This is the style guide: the story of how I made your machine._
+_A guide to writing software for humans and agents: the story of how I made your machine._
 
 ## Purpose
 

@@ -1,6 +1,6 @@
 [book]
 title = "How I Made Your Machine"
-description = "HIMYM - A Coding Style Guide"
+description = "HIMYM - A guide to writing software for humans and agents"
 language = "en"
 src = "src"
 
