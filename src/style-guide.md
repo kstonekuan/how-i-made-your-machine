@@ -13,6 +13,7 @@ It sets strong defaults, with room for justified exceptions when the tradeoff is
 - Model domain concepts explicitly instead of using ad-hoc primitives.
 - Use the type system and compiler as first-line quality gates.
 - Optimize for readable intent over clever implementation.
+- Parse external input into domain types at system boundaries; trust refined types downstream.
 - Test business behavior rather than framework or library internals.
 
 ## Type Safety and Relying on the Compiler
@@ -28,12 +29,16 @@ Here are some patterns that are useful to follow:
 - Favor exhaustive pattern matching where possible.
 - Represent unknown external values explicitly (`Unknown*`) instead of falling back silently.
 - Avoid weakening types (`any`, broad casts, untyped flows) unless unavoidable.
+- Prefer functions that return refined types over void-returning validation that discards what it learns.
+- Avoid duplicating the same fact across multiple fields or structures; keep one source of truth.
 
 ### Type Design Signals
 
 - If the value set is finite, use a union/enum instead of `string`.
 - If states are mutually exclusive, use one state union/enum instead of multiple booleans.
 - If function inputs represent domain concepts, use those domain types directly.
+- If a function validates a condition and returns void, it is probably discarding information — return a refined type instead.
+- If the same value is stored in two places, one will eventually be wrong — derive it or pick a single owner.
 
 ### Example 1: Finite Value Set as Variants
 
@@ -272,6 +277,235 @@ def schedule_message(channel: Channel, delivery_mode: DeliveryMode) -> None:
   </TabItem>
 </Tabs>
 
+## Parse at Boundaries
+
+Validation checks a condition and throws or returns nothing.
+Parsing checks the same condition but returns a refined type that carries the proof forward.
+When we validate and discard what we learned, every downstream function has to re-check or trust blindly.
+Alexis King's [Parse, Don't Validate](https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/) describes this well and clearly.
+
+Parse external input at system boundaries — user input, API responses, config files, webhook payloads — then pass the refined type through the rest of the system.
+Avoid scattering validation logic across business code (sometimes called "shotgun parsing"), where invalid input may be partially processed before being rejected.
+Example 9 in Exceptions shows a real-world instance of this pattern for partner webhooks.
+
+### Example 4: Return a Refined Type Instead of Void
+
+<Tabs groupId="parse-not-validate">
+  <TabItem value="pseudocode" label="Pseudocode" default>
+
+```text
+Validation (discards knowledge):
+  validate_email(input: string) -> void     # throws on failure
+  send_welcome(email: string)               # must trust caller or re-check
+
+Parsing (preserves knowledge):
+  parse_email(input: string) -> Email       # returns proof or error
+  send_welcome(email: Email)                # type guarantees validity
+```
+
+  </TabItem>
+  <TabItem value="typescript" label="TypeScript">
+
+```ts
+// Bad: validates but returns void — caller still holds a raw string.
+function validateEmail(input: string): void {
+  if (!input.includes("@")) {
+    throw new Error("invalid email");
+  }
+}
+
+function sendWelcomeUnderModeled(email: string): void {
+  validateEmail(email);
+  // email is still string — nothing prevents passing an unchecked value.
+  void email;
+}
+
+// Good: parse once at the boundary, carry proof in the type.
+type Email = string & { readonly __brand: "Email" };
+
+function parseEmail(input: string): Email {
+  if (!input.includes("@")) {
+    throw new Error("invalid email");
+  }
+  return input as Email;
+}
+
+function sendWelcome(email: Email): void {
+  // No re-validation needed — the type proves it was parsed.
+  void email;
+}
+```
+
+  </TabItem>
+  <TabItem value="rust" label="Rust">
+
+```rust
+// Bad: validates but returns nothing — caller still holds a raw &str.
+fn validate_email(input: &str) {
+    if !input.contains('@') {
+        panic!("invalid email");
+    }
+}
+
+fn send_welcome_under_modeled(email: &str) {
+    validate_email(email);
+    // email is still &str — nothing prevents passing an unchecked value.
+    let _ = email;
+}
+
+// Good: parse once at the boundary, carry proof in the type.
+struct Email(String);
+
+impl Email {
+    fn parse(input: &str) -> Result<Self, String> {
+        if !input.contains('@') {
+            return Err(format!("invalid email: {input}"));
+        }
+        Ok(Self(input.to_owned()))
+    }
+}
+
+fn send_welcome(email: &Email) {
+    // No re-validation needed — the type proves it was parsed.
+    let _ = email;
+}
+
+let _ = (send_welcome_under_modeled as fn(&str), send_welcome as fn(&Email));
+```
+
+  </TabItem>
+  <TabItem value="python" label="Python">
+
+```python
+# Bad: validates but returns None — caller still holds a raw str.
+def validate_email(input: str) -> None:
+    if "@" not in input:
+        raise ValueError("invalid email")
+
+def send_welcome_under_modeled(email: str) -> None:
+    validate_email(email)
+    # email is still str — nothing prevents passing an unchecked value.
+    _ = email
+
+# Good: parse once at the boundary, carry proof in the type.
+from typing import NewType
+
+Email = NewType("Email", str)
+
+def parse_email(input: str) -> Email:
+    if "@" not in input:
+        raise ValueError("invalid email")
+    return Email(input)
+
+def send_welcome(email: Email) -> None:
+    # No re-validation needed — the type proves it was parsed.
+    _ = email
+```
+
+  </TabItem>
+</Tabs>
+
+### Example 5: Smart Constructors for Non-Structural Invariants
+
+When an invariant cannot be captured by a union or enum — like a numeric range, a non-empty list, or a formatted string — use an opaque type with a constructing function that enforces the constraint.
+Downstream code receives the refined type and never needs to re-validate.
+
+<Tabs groupId="smart-constructors">
+  <TabItem value="pseudocode" label="Pseudocode" default>
+
+```text
+Under-modeled:
+  percentage: number               # caller must remember 0-100
+
+Better modeled:
+  Percentage = opaque(number)      # only created through constructor
+  make_percentage(n: number) -> Percentage | error
+```
+
+  </TabItem>
+  <TabItem value="typescript" label="TypeScript">
+
+```ts
+// Bad: raw number allows out-of-range values.
+function applyDiscountUnderModeled(percentage: number): void {
+  void percentage; // nothing prevents 150 or -3
+}
+
+// Good: branded type enforces range at construction.
+type Percentage = number & { readonly __brand: "Percentage" };
+
+function makePercentage(value: number): Percentage {
+  if (value < 0 || value > 100) {
+    throw new RangeError(`percentage out of range: ${value}`);
+  }
+  return value as Percentage;
+}
+
+function applyDiscount(percentage: Percentage): void {
+  // Safe to use directly — construction guarantees 0-100.
+  void percentage;
+}
+```
+
+  </TabItem>
+  <TabItem value="rust" label="Rust">
+
+```rust
+// Bad: raw f64 allows out-of-range values.
+fn apply_discount_under_modeled(percentage: f64) {
+    let _ = percentage; // nothing prevents 150.0 or -3.0
+}
+
+// Good: newtype with a constructor enforces the range.
+struct Percentage(f64);
+
+impl Percentage {
+    fn new(value: f64) -> Result<Self, String> {
+        if !(0.0..=100.0).contains(&value) {
+            return Err(format!("percentage out of range: {value}"));
+        }
+        Ok(Self(value))
+    }
+
+    fn value(&self) -> f64 {
+        self.0
+    }
+}
+
+fn apply_discount(percentage: &Percentage) {
+    // Safe to use directly — construction guarantees 0-100.
+    let _ = percentage.value();
+}
+
+let _ = apply_discount_under_modeled;
+```
+
+  </TabItem>
+  <TabItem value="python" label="Python">
+
+```python
+# Bad: raw float allows out-of-range values.
+def apply_discount_under_modeled(percentage: float) -> None:
+    _ = percentage  # nothing prevents 150.0 or -3.0
+
+# Good: NewType + constructor enforces the range.
+from typing import NewType
+
+Percentage = NewType("Percentage", float)
+
+def make_percentage(value: float) -> Percentage:
+    if not (0 <= value <= 100):
+        raise ValueError(f"percentage out of range: {value}")
+    return Percentage(value)
+
+def apply_discount(percentage: Percentage) -> None:
+    # Safe to use directly — construction guarantees 0-100.
+    _ = percentage
+```
+
+  </TabItem>
+</Tabs>
+
 ## Self-Documenting Code
 
 Self-documenting code is usually better than writing comments everywhere.
@@ -282,7 +516,7 @@ Comments go stale quickly, while clear naming and structure have to evolve with 
 - Add comments only for non-obvious decisions, invariants, or tradeoffs.
 - Avoid comments that restate what code already makes obvious.
 
-### Example 4: Document the Why, Not the Obvious What
+### Example 6: Document the Why, Not the Obvious What
 
 <Tabs groupId="documenting-why">
   <TabItem value="pseudocode" label="Pseudocode" default>
@@ -372,7 +606,7 @@ But we should avoid writing tests for the sake of writing tests: they add mainte
 - Use mocks only for unstable boundaries (network, filesystem, time, OS/process boundaries).
 - Assert externally meaningful behavior, not private implementation details.
 
-### Example 5: Test State Transitions and Outcomes
+### Example 7: Test State Transitions and Outcomes
 
 <Tabs groupId="testing-behavior">
   <TabItem value="pseudocode" label="Pseudocode" default>
@@ -440,7 +674,7 @@ def test_good_transition_order_state_moves_draft_to_published() -> None:
   </TabItem>
 </Tabs>
 
-### Example 6: Mock Only Unstable Boundaries
+### Example 8: Mock Only Unstable Boundaries
 
 <Tabs groupId="testing-mocks">
   <TabItem value="pseudocode" label="Pseudocode" default>
@@ -526,7 +760,7 @@ When we take an exception, we should document:
 - Why
 - Which safeguards are in place (validation, logging, tests)
 
-### Example 7: External Contract Requires Looser Typing
+### Example 9: External Contract Requires Looser Typing
 
 <Tabs groupId="exceptions">
   <TabItem value="pseudocode" label="Pseudocode" default>
