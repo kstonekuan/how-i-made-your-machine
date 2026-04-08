@@ -23,3 +23,13 @@ cargo fmt                                   # Formatting
 
 - **Verbose naming**: Variable and function naming should read like documentation
 - **Strategic comments**: Only for non-obvious logic or architectural decisions; avoid restating what code shows
+
+## Keeping the Skill in Sync
+
+The skill at `skills/how-i-made-your-machine/` follows the [Agent Skills specification](https://agentskills.io/specification).
+Its `SKILL.md` is a manual copy of the style guide (`src/style-guide.md`) with skill-specific additions.
+When updating the style guide, also update the skill to match while preserving the differences required by the spec:
+
+- **YAML frontmatter** — required by the spec (`name`, `description`, and any optional fields)
+- **Agent-specific sections** — instructions for LLMs on how to apply the guide (e.g., "Agent Usage", "Agent Workflow"), inserted before the guide content
+- **Bundled resources** — the skill may include files in optional spec directories (e.g., `references/`, `scripts/`, `assets/`) and reference them with relative paths from `SKILL.md`, where the style guide only uses external URLs

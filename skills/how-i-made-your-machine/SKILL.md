@@ -304,11 +304,11 @@ def schedule_message(channel: Channel, delivery_mode: DeliveryMode) -> None:
 Validation checks a condition and throws or returns nothing.
 Parsing checks the same condition but returns a refined type that carries the proof forward.
 When we validate and discard what we learned, every downstream function has to re-check or trust blindly.
-Alexis King's [Parse, Don't Validate](https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/) describes this well and clearly.
+Alexis King's [Parse, Don't Validate](https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/) describes this well and clearly. The full article is included as a [reference](references/parse-dont-validate.md).
 
 Parse external input at system boundaries — user input, API responses, config files, webhook payloads — then pass the refined type through the rest of the system.
 Avoid scattering validation logic across business code (sometimes called "shotgun parsing"), where invalid input may be partially processed before being rejected.
-Example 9 in Exceptions shows a real-world instance of this pattern for partner webhooks.
+Example 12 in Exceptions shows a real-world instance of this pattern for partner webhooks.
 
 ### Example 4: Return a Refined Type Instead of Void
 
@@ -772,6 +772,189 @@ def test_good_uses_cached_rate_when_live_lookup_fails() -> None:
   </TabItem>
 </Tabs>
 
+## Choosing Dependencies
+
+The code we import carries the same maintenance cost as code we write.
+A dependency is a commitment to its API surface, its release cadence, its transitive dependencies, and its type design choices.
+Every dependency is also an attack surface — supply chain attacks target unmaintained, obscure, or compromised packages, so choosing well is a security concern, not just a quality one.
+
+- Prefer popular, actively maintained libraries backed by organizations or well-known open-source communities. Recent contributions, high download counts, and security audit history all signal that vulnerabilities are more likely to be caught early.
+- If two libraries solve the same problem and equally safe to depend on, prefer the one whose API returns well-typed domain objects over one that returns loosely typed containers (`any`, raw dicts, untyped JSON).
+- Value libraries whose internals reflect stronger type design. A Python library with a Rust core benefits from Rust's compiler guarantees at the boundary while remaining ergonomic in Python.
+- If the functionality is a well-known algorithm or data structure that fits in a few lines, re-implement it. The dependency's maintenance cost will exceed the code's, and every dependency you avoid is one fewer supply chain risk.
+- If you would need to wrap the library in adapter types to make it fit your domain model, weigh whether the library is saving you work or creating it.
+
+### Example 10: Prefer Libraries That Align With Your Type Design
+
+<Tabs groupId="dependency-alignment">
+  <TabItem value="pseudocode" label="Pseudocode" default>
+
+```text
+Poor alignment:
+  response = http_get(url)             # returns untyped dict
+  name = response["user"]["name"]      # runtime key error if shape changes
+
+Good alignment:
+  response = http_get(url) -> User     # returns typed domain object
+  name = response.name                 # compiler catches field typos
+```
+
+  </TabItem>
+  <TabItem value="typescript" label="TypeScript">
+
+```ts
+// Bad: library returns `any` — caller must cast or assert at every access.
+async function getUserNameUnderModeled(userId: string): Promise<string> {
+  // biome-ignore lint/suspicious/noExplicitAny: demonstrating a bad library API
+  const response: any = await untypedHttpClient.get(`/users/${userId}`);
+  return response.data.name;
+}
+
+// Good: library returns typed response — compiler catches field errors.
+import { z } from "zod";
+
+const UserSchema = z.object({
+  name: z.string(),
+  email: z.string(),
+});
+
+type User = z.infer<typeof UserSchema>;
+
+async function getUserName(userId: string): Promise<string> {
+  const response = await typedHttpClient.get(`/users/${userId}`, UserSchema);
+  return response.name;
+}
+```
+
+  </TabItem>
+  <TabItem value="rust" label="Rust">
+
+```rust
+use serde::Deserialize;
+use serde_json::Value;
+
+// Bad: library returns serde_json::Value — caller must chain fallible accessors.
+fn get_user_name_under_modeled(response: &Value) -> Option<&str> {
+    response.get("user")?.get("name")?.as_str()
+}
+
+// Good: library deserializes into a typed struct — field access is compile-checked.
+#[derive(Deserialize)]
+struct User {
+    name: String,
+    email: String,
+}
+
+fn get_user_name(user: &User) -> &str {
+    &user.name
+}
+
+let _ = get_user_name_under_modeled;
+```
+
+  </TabItem>
+  <TabItem value="python" label="Python">
+
+```python
+from typing import Any
+
+# Bad: library returns untyped dict — field access is unchecked.
+def get_user_name_under_modeled(response: dict[str, Any]) -> str:
+    return response["user"]["name"]  # KeyError if shape changes
+
+# Good: library returns typed model — type checker catches field errors.
+from dataclasses import dataclass
+
+@dataclass
+class User:
+    name: str
+    email: str
+
+def get_user_name(user: User) -> str:
+    return user.name
+```
+
+  </TabItem>
+</Tabs>
+
+### Example 11: Re-implement When the Dependency Outweighs the Logic
+
+<Tabs groupId="dependency-vs-reimplement">
+  <TabItem value="pseudocode" label="Pseudocode" default>
+
+```text
+Unnecessary dependency:
+  import clamp from "math-utils-lib"
+  result = clamp(value, 0, 100)
+
+Better as local code:
+  clamp(value, min, max) = max(min, min(max, value))
+  result = clamp(value, 0, 100)
+```
+
+  </TabItem>
+  <TabItem value="typescript" label="TypeScript">
+
+```ts
+// Bad: importing a package for a one-liner adds supply-chain surface for no benefit.
+// import { clamp } from "math-utils-lib";
+// const clampedFromLib = clamp(value, 0, 100);
+
+// Good: trivial, well-understood logic is cheaper to own than to import.
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+const clamped = clamp(150, 0, 100);
+void clamped;
+```
+
+  </TabItem>
+  <TabItem value="rust" label="Rust">
+
+```rust
+// Bad: pulling in an external crate for something the standard library already provides.
+// use num::clamp;
+// let clamped_from_crate = clamp(150.0, 0.0, 100.0);
+
+// Good: the standard library already has f64::clamp — no dependency needed.
+let clamped = 150.0_f64.clamp(0.0, 100.0);
+let _ = clamped;
+```
+
+  </TabItem>
+  <TabItem value="python" label="Python">
+
+```python
+# Bad: importing a utility library for a one-liner adds supply-chain surface for no benefit.
+# from math_utils_lib import clamp
+# clamped_from_lib = clamp(value, 0, 100)
+
+# Good: trivial, well-understood logic is cheaper to own than to import.
+def clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+clamped = clamp(150, 0, 100)
+```
+
+  </TabItem>
+</Tabs>
+
+### Choosing Linters and Type Checkers
+
+The patterns in this guide — exhaustive matching, refined types, parse-at-boundary — only hold if the toolchain actually enforces them.
+Linters and type checkers are dependencies too, and the same selection criteria apply: prefer popular, actively maintained tools backed by known organizations, and favor those whose design aligns with the values here.
+
+- Enable the strictest practical rule set. Lenient defaults let the patterns this guide recommends slip through unchecked.
+- Prefer tools written in stricter, compiled languages. Rust-based tooling tends to be faster and benefits from the same compiler-driven correctness this guide advocates.
+- Keep the toolchain cohesive. Tools from the same ecosystem share conventions, reduce configuration friction, and are more likely to be maintained together.
+
+Current examples of tools that fit these criteria:
+
+- **TypeScript** — Biome (linter and formatter, written in Rust) or oxlint (linter from the Oxc project, written in Rust).
+- **Rust** — Clippy with pedantic lints enabled. The default lint set is intentionally conservative; pedantic raises the bar to match the strictness this guide expects.
+- **Python** — The Astral ecosystem: uv (package manager), ruff (linter and formatter), and ty (type checker), all written in Rust and designed to work together.
+
 ## Exceptions
 
 We can make exceptions when strict modeling creates disproportionate complexity, external contracts require looser typing, or performance/interoperability constraints apply.
@@ -782,7 +965,7 @@ When we take an exception, we should document:
 - Why
 - Which safeguards are in place (validation, logging, tests)
 
-### Example 9: External Contract Requires Looser Typing
+### Example 12: External Contract Requires Looser Typing
 
 <Tabs groupId="exceptions">
   <TabItem value="pseudocode" label="Pseudocode" default>
