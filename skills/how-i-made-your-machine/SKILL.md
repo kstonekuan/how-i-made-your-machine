@@ -528,6 +528,201 @@ def apply_discount(percentage: Percentage) -> None:
   </TabItem>
 </Tabs>
 
+## Modeling Recoverable Outcomes vs Errors
+
+Not every failure is an error.
+Some failures are expected outcomes the caller branches on — "user not found", "row already exists", "rate-limited, retry later".
+Others are genuinely exceptional, and the only sensible response is to log them at a top-level handler and bail.
+
+Model the two cases differently:
+
+- **Recoverable outcomes** belong in the success type as variants the caller pattern-matches on. They are part of the function's contract, and the type system should force every caller to handle each case.
+- **Errors** are unrecoverable propagation. They flow through the failure channel toward a single top-level handler that logs and exits. Callers don't branch on them — they propagate. An opaque, contextual error type (`anyhow::Error` in Rust, a plain `Error`/`Exception` elsewhere) is enough; the type system shouldn't push callers to enumerate variants they will never branch on.
+
+This keeps "make invalid states unrepresentable" honest: the *recoverable* state space gets explicit variants, while the *error* channel stays an opaque escape hatch.
+A typed error enum (e.g. `thiserror`) is only worth introducing when a downstream caller genuinely needs to discriminate failure modes — and even then, prefer moving the discriminating cases to the success side first.
+
+### Example 6: Outcome Variants on the Success Side
+
+<Tabs groupId="outcomes-vs-errors">
+  <TabItem value="pseudocode" label="Pseudocode" default>
+
+```text
+Conflated:
+  fetch_user(id) -> Result<User, FetchUserError>
+                                       NotFound | Stale | Database | Network
+  caller must triage which error variants are recoverable
+
+Separated:
+  fetch_user(id) -> Result<UserLookup, OpaqueError>
+                              Found(User) | NotFound | Stale
+  caller pattern-matches on UserLookup; OpaqueError just propagates
+```
+
+  </TabItem>
+  <TabItem value="typescript" label="TypeScript">
+
+```ts
+interface User {
+  id: string;
+  name: string;
+}
+
+// Bad: every recoverable case stuffed into the error channel.
+// Callers must triage which thrown shapes to handle and which to rethrow.
+class FetchUserError extends Error {
+  constructor(
+    readonly kind: "NotFound" | "Stale" | "Database" | "Network",
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+async function fetchUserUnderModeled(id: string): Promise<User> {
+  throw new FetchUserError("NotFound", `no user with id ${id}`);
+}
+
+// Good: recoverable cases as a discriminated union on the success side.
+// Real errors are thrown and propagate to the top-level handler.
+type UserLookup =
+  | { kind: "Found"; user: User }
+  | { kind: "NotFound" }
+  | { kind: "Stale" };
+
+async function fetchUser(id: string): Promise<UserLookup> {
+  // Database/network failures are thrown, not returned — the caller
+  // branches on UserLookup and lets exceptions propagate.
+  void id;
+  return { kind: "NotFound" };
+}
+
+async function handleRequest(id: string): Promise<string> {
+  const lookup = await fetchUser(id);
+  switch (lookup.kind) {
+    case "Found":
+      return `welcome, ${lookup.user.name}`;
+    case "NotFound":
+      return "no such user";
+    case "Stale":
+      return "please refresh";
+  }
+}
+
+void (fetchUserUnderModeled as (id: string) => Promise<User>);
+void handleRequest;
+```
+
+  </TabItem>
+  <TabItem value="rust" label="Rust">
+
+```rust
+struct UserId(String);
+struct User {
+    name: String,
+}
+
+// Bad: recoverable cases mixed into the error type. Callers must remember
+// which variants are bubble-up vs handle-here, and the signature suggests
+// they're equally important.
+enum FetchUserError {
+    NotFound,
+    Stale,
+    Database(String),
+    Network(String),
+}
+
+fn fetch_user_under_modeled(id: &UserId) -> Result<User, FetchUserError> {
+    let _ = id;
+    Err(FetchUserError::NotFound)
+}
+
+// Good: recoverable outcomes are variants on the success side.
+// Real errors flow through anyhow to the top-level handler.
+enum UserLookup {
+    Found(User),
+    NotFound,
+    Stale,
+}
+
+fn fetch_user(id: &UserId) -> anyhow::Result<UserLookup> {
+    // Database/network failures use `?` and propagate as anyhow::Error.
+    let _ = id;
+    Ok(UserLookup::NotFound)
+}
+
+fn handle_request(id: &UserId) -> anyhow::Result<String> {
+    Ok(match fetch_user(id)? {
+        UserLookup::Found(user) => format!("welcome, {}", user.name),
+        UserLookup::NotFound => "no such user".to_owned(),
+        UserLookup::Stale => "please refresh".to_owned(),
+    })
+}
+
+let _ = (
+    fetch_user_under_modeled as fn(&UserId) -> Result<User, FetchUserError>,
+    handle_request as fn(&UserId) -> anyhow::Result<String>,
+);
+```
+
+  </TabItem>
+  <TabItem value="python" label="Python">
+
+```python
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class User:
+    id: str
+    name: str
+
+# Bad: every recoverable case stuffed into a single exception type.
+# Callers must remember which `kind` values to handle vs re-raise.
+class FetchUserError(Exception):
+    def __init__(self, kind: str, message: str) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+def fetch_user_under_modeled(id: str) -> User:
+    raise FetchUserError("NotFound", f"no user with id {id}")
+
+# Good: recoverable cases as a tagged union on the success side.
+# Real errors are raised and propagate to the top-level handler.
+@dataclass(frozen=True)
+class UserFound:
+    user: User
+
+@dataclass(frozen=True)
+class UserNotFound:
+    pass
+
+@dataclass(frozen=True)
+class UserStale:
+    pass
+
+UserLookup = UserFound | UserNotFound | UserStale
+
+def fetch_user(id: str) -> UserLookup:
+    # Database/network failures are raised, not returned — the caller
+    # pattern-matches on UserLookup and lets exceptions propagate.
+    _ = id
+    return UserNotFound()
+
+def handle_request(id: str) -> str:
+    match fetch_user(id):
+        case UserFound(user):
+            return f"welcome, {user.name}"
+        case UserNotFound():
+            return "no such user"
+        case UserStale():
+            return "please refresh"
+
+_ = (fetch_user_under_modeled, handle_request)
+```
+
+  </TabItem>
+</Tabs>
+
 ## Self-Documenting Code
 
 Self-documenting code is usually better than writing comments everywhere.
@@ -538,7 +733,7 @@ Comments go stale quickly, while clear naming and structure have to evolve with 
 - Add comments only for non-obvious decisions, invariants, or tradeoffs.
 - Avoid comments that restate what code already makes obvious.
 
-### Example 6: Document the Why, Not the Obvious What
+### Example 7: Document the Why, Not the Obvious What
 
 <Tabs groupId="documenting-why">
   <TabItem value="pseudocode" label="Pseudocode" default>
@@ -628,7 +823,7 @@ But we should avoid writing tests for the sake of writing tests: they add mainte
 - Use mocks only for unstable boundaries (network, filesystem, time, OS/process boundaries).
 - Assert externally meaningful behavior, not private implementation details.
 
-### Example 7: Test State Transitions and Outcomes
+### Example 8: Test State Transitions and Outcomes
 
 <Tabs groupId="testing-behavior">
   <TabItem value="pseudocode" label="Pseudocode" default>
@@ -696,7 +891,7 @@ def test_good_transition_order_state_moves_draft_to_published() -> None:
   </TabItem>
 </Tabs>
 
-### Example 8: Mock Only Unstable Boundaries
+### Example 9: Mock Only Unstable Boundaries
 
 <Tabs groupId="testing-mocks">
   <TabItem value="pseudocode" label="Pseudocode" default>

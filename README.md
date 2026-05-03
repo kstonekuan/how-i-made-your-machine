@@ -34,5 +34,5 @@ cargo check --workspace
 Install the packaged skill from this repo with:
 
 ```bash
-npx skills add kstonekuan/how-i-made-your-machine/skills/how-i-made-your-machine
+npx skills add kstonekuan/how-i-made-your-machine
 ```
