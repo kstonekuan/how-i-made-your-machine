@@ -288,7 +288,7 @@ Alexis King's [Parse, Don't Validate](https://lexi-lambda.github.io/blog/2019/11
 
 Parse external input at system boundaries — user input, API responses, config files, webhook payloads — then pass the refined type through the rest of the system.
 Avoid scattering validation logic across business code (sometimes called "shotgun parsing"), where invalid input may be partially processed before being rejected.
-Example 12 in Exceptions shows a real-world instance of this pattern for partner webhooks.
+Example 13 in Exceptions shows a real-world instance of this pattern for partner webhooks.
 
 ### Example 4: Return a Refined Type Instead of Void
 
@@ -703,6 +703,183 @@ _ = (fetch_user_under_modeled, handle_request)
   </TabItem>
 </Tabs>
 
+## Single Source of Truth for Behavior
+
+When the same operation is exposed through more than one entry point — a single-target endpoint and a bulk endpoint, an internal API and a CLI wrapper, a UI button and a background job — write the operation once and have the other entry points wrap it.
+
+The risk isn't repetition for its own sake. It's that the two paths share a contract today and silently drift tomorrow. A new validation, a new audit hook, a new lock acquisition — added to one path, forgotten on the other. Both paths still type-check, so the compiler won't catch the divergence.
+
+Pick one path as the core. Have it own validation, locking, mutation, and persistence, and return domain values rather than transport-shaped responses so non-HTTP callers (tests, jobs, scripts) can use it directly. The other entry points become thin wrappers that adapt arguments and shape responses.
+
+For bulk-as-core specifically, decide the atomicity model deliberately and let the return type carry it:
+
+- **Atomic** — succeed entirely or fail with a failed-index. Returns something like `Result<(), { failedAt: number, reason: ... }>`.
+- **Tolerant** — return applied and missing lists, letting the caller act on partial success. Returns something like `{ applied: T[], missing: { item: T, reason: ... }[] }`.
+
+Mirror the factoring on the client: `push(item)` becomes `push_bulk([item])`.
+
+**When to skip**: operations that aren't really CRUD over a uniform resource set — side-effecting RPCs with per-call identity (`charge_card`, `send_email_now`), or endpoints whose only realistic caller is a one-at-a-time human action with no bulk equivalent in sight. Forcing a list shape on those obscures intent without preventing any drift.
+
+### Example 7: Bulk Owns the Operation
+
+<Tabs groupId="single-source-behavior">
+  <TabItem value="pseudocode" label="Pseudocode" default>
+
+```text
+Drift-prone:
+  add_user(group, user)       # validates cap, locks, persists
+  add_users(group, users)     # validates cap, locks, persists — independently
+
+Single source of truth:
+  add_users(group, users)     # owns validation, locking, persistence
+  add_user(group, user) = add_users(group, [user])
+```
+
+  </TabItem>
+  <TabItem value="typescript" label="TypeScript">
+
+```ts
+type GroupId = string & { readonly __brand: "GroupId" };
+type UserId = string & { readonly __brand: "UserId" };
+
+declare function validateMembershipCap(group: GroupId, addCount: number): Promise<void>;
+declare function withGroupLock<T>(group: GroupId, fn: () => Promise<T>): Promise<T>;
+declare function persistMembership(group: GroupId, users: UserId[]): Promise<void>;
+
+// Bad: two entry points implement the same operation independently.
+// A rule added to one path (audit log, rate cap, new invariant) silently
+// skips the other.
+async function addUserUnderModeled(group: GroupId, user: UserId): Promise<void> {
+  await validateMembershipCap(group, 1);
+  await withGroupLock(group, () => persistMembership(group, [user]));
+}
+
+async function addUsersUnderModeled(group: GroupId, users: UserId[]): Promise<void> {
+  await validateMembershipCap(group, users.length);
+  await withGroupLock(group, () => persistMembership(group, users));
+}
+
+// Good: the bulk path owns the operation; the single wraps it.
+// Any rule added to addUsers automatically applies to addUser.
+async function addUsers(group: GroupId, users: UserId[]): Promise<void> {
+  await validateMembershipCap(group, users.length);
+  await withGroupLock(group, () => persistMembership(group, users));
+}
+
+async function addUser(group: GroupId, user: UserId): Promise<void> {
+  await addUsers(group, [user]);
+}
+
+void [addUserUnderModeled, addUsersUnderModeled, addUsers, addUser];
+```
+
+  </TabItem>
+  <TabItem value="rust" label="Rust">
+
+```rust
+struct GroupId(String);
+struct UserId(String);
+
+fn validate_membership_cap(_group: &GroupId, _add_count: usize) -> anyhow::Result<()> {
+    Ok(())
+}
+
+fn with_group_lock(_group: &GroupId, body: impl FnOnce() -> anyhow::Result<()>) -> anyhow::Result<()> {
+    body()
+}
+
+fn persist_membership(_group: &GroupId, _users: &[UserId]) -> anyhow::Result<()> {
+    Ok(())
+}
+
+// Bad: two entry points implement the same operation independently.
+// A rule added to one path (audit log, rate cap, new invariant) silently
+// skips the other.
+fn add_user_under_modeled(group: GroupId, user: UserId) -> anyhow::Result<()> {
+    validate_membership_cap(&group, 1)?;
+    with_group_lock(&group, || persist_membership(&group, &[user]))
+}
+
+fn add_users_under_modeled(group: GroupId, users: Vec<UserId>) -> anyhow::Result<()> {
+    validate_membership_cap(&group, users.len())?;
+    with_group_lock(&group, || persist_membership(&group, &users))
+}
+
+// Good: the bulk path owns the operation; the single wraps it.
+// Any rule added to add_users automatically applies to add_user.
+fn add_users(group: GroupId, users: Vec<UserId>) -> anyhow::Result<()> {
+    validate_membership_cap(&group, users.len())?;
+    with_group_lock(&group, || persist_membership(&group, &users))
+}
+
+fn add_user(group: GroupId, user: UserId) -> anyhow::Result<()> {
+    add_users(group, vec![user])
+}
+
+let _ = (
+    add_user_under_modeled as fn(GroupId, UserId) -> anyhow::Result<()>,
+    add_users_under_modeled as fn(GroupId, Vec<UserId>) -> anyhow::Result<()>,
+    add_user as fn(GroupId, UserId) -> anyhow::Result<()>,
+    add_users as fn(GroupId, Vec<UserId>) -> anyhow::Result<()>,
+);
+```
+
+  </TabItem>
+  <TabItem value="python" label="Python">
+
+```python
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class GroupId:
+    value: str
+
+@dataclass(frozen=True)
+class UserId:
+    value: str
+
+def validate_membership_cap(group: GroupId, add_count: int) -> None:
+    _ = (group, add_count)
+
+@contextmanager
+def group_lock(group: GroupId) -> Iterator[None]:
+    _ = group
+    yield
+
+def persist_membership(group: GroupId, users: list[UserId]) -> None:
+    _ = (group, users)
+
+# Bad: two entry points implement the same operation independently.
+# A rule added to one path (audit log, rate cap, new invariant) silently
+# skips the other.
+def add_user_under_modeled(group: GroupId, user: UserId) -> None:
+    validate_membership_cap(group, 1)
+    with group_lock(group):
+        persist_membership(group, [user])
+
+def add_users_under_modeled(group: GroupId, users: list[UserId]) -> None:
+    validate_membership_cap(group, len(users))
+    with group_lock(group):
+        persist_membership(group, users)
+
+# Good: the bulk path owns the operation; the single wraps it.
+# Any rule added to add_users automatically applies to add_user.
+def add_users(group: GroupId, users: list[UserId]) -> None:
+    validate_membership_cap(group, len(users))
+    with group_lock(group):
+        persist_membership(group, users)
+
+def add_user(group: GroupId, user: UserId) -> None:
+    add_users(group, [user])
+
+_ = (add_user_under_modeled, add_users_under_modeled, add_users, add_user)
+```
+
+  </TabItem>
+</Tabs>
+
 ## Self-Documenting Code
 
 Self-documenting code is usually better than writing comments everywhere.
@@ -713,7 +890,7 @@ Comments go stale quickly, while clear naming and structure have to evolve with 
 - Add comments only for non-obvious decisions, invariants, or tradeoffs.
 - Avoid comments that restate what code already makes obvious.
 
-### Example 7: Document the Why, Not the Obvious What
+### Example 8: Document the Why, Not the Obvious What
 
 <Tabs groupId="documenting-why">
   <TabItem value="pseudocode" label="Pseudocode" default>
@@ -803,7 +980,7 @@ But we should avoid writing tests for the sake of writing tests: they add mainte
 - Use mocks only for unstable boundaries (network, filesystem, time, OS/process boundaries).
 - Assert externally meaningful behavior, not private implementation details.
 
-### Example 8: Test State Transitions and Outcomes
+### Example 9: Test State Transitions and Outcomes
 
 <Tabs groupId="testing-behavior">
   <TabItem value="pseudocode" label="Pseudocode" default>
@@ -871,7 +1048,7 @@ def test_good_transition_order_state_moves_draft_to_published() -> None:
   </TabItem>
 </Tabs>
 
-### Example 9: Mock Only Unstable Boundaries
+### Example 10: Mock Only Unstable Boundaries
 
 <Tabs groupId="testing-mocks">
   <TabItem value="pseudocode" label="Pseudocode" default>
@@ -972,7 +1149,7 @@ one.
 - If you would need to wrap the library in adapter types to make it fit your
   domain model, weigh whether the library is saving you work or creating it.
 
-### Example 10: Prefer Libraries That Align With Your Type Design
+### Example 11: Prefer Libraries That Align With Your Type Design
 
 <Tabs groupId="dependency-alignment">
   <TabItem value="pseudocode" label="Pseudocode" default>
@@ -1065,7 +1242,7 @@ def get_user_name(user: User) -> str:
   </TabItem>
 </Tabs>
 
-### Example 11: Re-implement When the Dependency Outweighs the Logic
+### Example 12: Re-implement When the Dependency Outweighs the Logic
 
 <Tabs groupId="dependency-vs-reimplement">
   <TabItem value="pseudocode" label="Pseudocode" default>
@@ -1157,7 +1334,7 @@ When we take an exception, we should document:
 - Why
 - Which safeguards are in place (validation, logging, tests)
 
-### Example 12: External Contract Requires Looser Typing
+### Example 13: External Contract Requires Looser Typing
 
 <Tabs groupId="exceptions">
   <TabItem value="pseudocode" label="Pseudocode" default>
