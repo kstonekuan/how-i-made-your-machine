@@ -7,6 +7,16 @@
 
 ---
 
+## Contents
+
+- [The essence of type-driven design](#the-essence-of-type-driven-design)
+  - [The realm of possibility](#the-realm-of-possibility)
+  - [Turning partial functions total](#turning-partial-functions-total)
+  - [The power of parsing](#the-power-of-parsing)
+  - [The danger of validation](#the-danger-of-validation)
+- [Parsing, not validating, in practice](#parsing-not-validating-in-practice)
+- [Recap, reflection, and related reading](#recap-reflection-and-related-reading)
+
 Historically, I've struggled to find a concise, simple way to explain what it means to practice type-driven design. Too often, when someone asks me "How did you come up with this approach?" I find I can't give them a satisfying answer. I know it didn't just come to me in a vision---I have an iterative design process that doesn't require plucking the "right" approach out of thin air---yet I haven't been very successful in communicating that process to others.
 
 However, about a month ago, I was reflecting on Twitter about the differences I experienced parsing JSON in statically- and dynamically-typed languages, and finally, I realized what I was looking for. Now I have a single, snappy slogan that encapsulates what type-driven design means to me, and better yet, it's only three words long:

@@ -27,9 +27,13 @@ cargo fmt                                   # Formatting
 ## Keeping the Skill in Sync
 
 The skill at `skills/how-i-made-your-machine/` follows the [Agent Skills specification](https://agentskills.io/specification).
-Its `SKILL.md` is a manual copy of the style guide (`src/style-guide.md`) with skill-specific additions.
-When updating the style guide, also update the skill to match while preserving the differences required by the spec:
+It is an agent-oriented, progressively disclosed version of the style guide rather than a complete copy of `src/style-guide.md`.
+When updating the style guide, update the corresponding skill material while preserving the differences required by the spec:
 
 - **YAML frontmatter** — required by the spec (`name`, `description`, and any optional fields)
-- **Agent-specific sections** — instructions for LLMs on how to apply the guide (e.g., "Agent Usage", "Agent Workflow"), inserted before the guide content
-- **Bundled resources** — the skill may include files in optional spec directories (e.g., `references/`, `scripts/`, `assets/`) and reference them with relative paths from `SKILL.md`, where the style guide only uses external URLs
+- **Concise core instructions** — `SKILL.md` contains only the workflow, core defaults, reference routing, and review checklist that agents need on every task
+- **Topic references** — detailed rationale lives in `references/` and is loaded only when the corresponding concern applies
+- **Language examples** — examples from the style guide are grouped by language so an agent can load only the language relevant to its task
+- **Direct routing** — every reference remains one level below and is linked directly from `SKILL.md` with a clear condition for reading it
+
+Do not restore the full style guide to `SKILL.md`. Keep its body comfortably below 500 lines, avoid duplicating detailed material between it and the references, and add a table of contents to any reference longer than 100 lines.
