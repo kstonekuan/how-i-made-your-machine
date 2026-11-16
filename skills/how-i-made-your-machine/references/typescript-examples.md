@@ -10,13 +10,14 @@ Use this reference when applying the style guide to TypeScript code and a concre
 - [Example 4: Return a Refined Type Instead of Void](#example-4-return-a-refined-type-instead-of-void)
 - [Example 5: Smart Constructors for Non-Structural Invariants](#example-5-smart-constructors-for-non-structural-invariants)
 - [Example 6: Outcome Variants on the Success Side](#example-6-outcome-variants-on-the-success-side)
-- [Example 7: Bulk Owns the Operation](#example-7-bulk-owns-the-operation)
-- [Example 8: Document the Why, Not the Obvious What](#example-8-document-the-why-not-the-obvious-what)
-- [Example 9: Test State Transitions and Outcomes](#example-9-test-state-transitions-and-outcomes)
-- [Example 10: Mock Only Unstable Boundaries](#example-10-mock-only-unstable-boundaries)
-- [Example 11: Prefer Libraries That Align With Your Type Design](#example-11-prefer-libraries-that-align-with-your-type-design)
-- [Example 12: Re-implement When the Dependency Outweighs the Logic](#example-12-re-implement-when-the-dependency-outweighs-the-logic)
-- [Example 13: External Contract Requires Looser Typing](#example-13-external-contract-requires-looser-typing)
+- [Example 7: Decide in the Core, Act in the Shell](#example-7-decide-in-the-core-act-in-the-shell)
+- [Example 8: Bulk Owns the Operation](#example-8-bulk-owns-the-operation)
+- [Example 9: Document the Why, Not the Obvious What](#example-9-document-the-why-not-the-obvious-what)
+- [Example 10: Test State Transitions and Outcomes](#example-10-test-state-transitions-and-outcomes)
+- [Example 11: Mock Only Unstable Boundaries](#example-11-mock-only-unstable-boundaries)
+- [Example 12: Prefer Libraries That Align With Your Type Design](#example-12-prefer-libraries-that-align-with-your-type-design)
+- [Example 13: Re-implement When the Dependency Outweighs the Logic](#example-13-re-implement-when-the-dependency-outweighs-the-logic)
+- [Example 14: External Contract Requires Looser Typing](#example-14-external-contract-requires-looser-typing)
 
 ## Example 1: Finite Value Set as Variants
 
@@ -172,7 +173,70 @@ void (fetchUserUnderModeled as (id: string) => Promise<User>);
 void handleRequest;
 ```
 
-## Example 7: Bulk Owns the Operation
+## Example 7: Decide in the Core, Act in the Shell
+
+```ts
+interface Subscription {
+  customerId: string;
+  priceInCents: number;
+  expiresAt: Date;
+  autoRenews: boolean;
+}
+
+declare function loadSubscription(subscriptionId: string): Promise<Subscription>;
+declare function chargeCustomer(customerId: string, amountInCents: number): Promise<void>;
+declare function sendRenewalReminder(customerId: string): Promise<void>;
+
+const REMINDER_WINDOW_IN_MILLISECONDS = 7 * 24 * 60 * 60 * 1000;
+
+// Bad: decisions and effects are interleaved. Testing any branch needs a
+// fake database, clock, payment provider, and mailer.
+async function renewSubscriptionUnderModeled(subscriptionId: string): Promise<void> {
+  const subscription = await loadSubscription(subscriptionId);
+  const millisecondsUntilExpiry = subscription.expiresAt.getTime() - Date.now();
+  if (subscription.autoRenews && millisecondsUntilExpiry <= 0) {
+    await chargeCustomer(subscription.customerId, subscription.priceInCents);
+  } else if (!subscription.autoRenews && millisecondsUntilExpiry <= REMINDER_WINDOW_IN_MILLISECONDS) {
+    await sendRenewalReminder(subscription.customerId);
+  }
+}
+
+// Good: the core is pure — values in, a decision out.
+type RenewalDecision =
+  | { kind: "Charge"; amountInCents: number }
+  | { kind: "SendReminder" }
+  | { kind: "NoAction" };
+
+function decideRenewal(subscription: Subscription, now: Date): RenewalDecision {
+  const millisecondsUntilExpiry = subscription.expiresAt.getTime() - now.getTime();
+  if (subscription.autoRenews && millisecondsUntilExpiry <= 0) {
+    return { kind: "Charge", amountInCents: subscription.priceInCents };
+  }
+  if (!subscription.autoRenews && millisecondsUntilExpiry <= REMINDER_WINDOW_IN_MILLISECONDS) {
+    return { kind: "SendReminder" };
+  }
+  return { kind: "NoAction" };
+}
+
+// The shell gathers inputs, asks the core, and performs the effect it names.
+async function renewSubscription(subscriptionId: string): Promise<void> {
+  const subscription = await loadSubscription(subscriptionId);
+  const decision = decideRenewal(subscription, new Date());
+  switch (decision.kind) {
+    case "Charge":
+      return chargeCustomer(subscription.customerId, decision.amountInCents);
+    case "SendReminder":
+      return sendRenewalReminder(subscription.customerId);
+    case "NoAction":
+      return;
+  }
+}
+
+void renewSubscriptionUnderModeled;
+void renewSubscription;
+```
+
+## Example 8: Bulk Owns the Operation
 
 ```ts
 type GroupId = string & { readonly __brand: "GroupId" };
@@ -209,7 +273,7 @@ async function addUser(group: GroupId, user: UserId): Promise<void> {
 void [addUserUnderModeled, addUsersUnderModeled, addUsers, addUser];
 ```
 
-## Example 8: Document the Why, Not the Obvious What
+## Example 9: Document the Why, Not the Obvious What
 
 ```ts
 // Bad: restates obvious code behavior without context.
@@ -229,7 +293,7 @@ function isRefundEligible(
 }
 ```
 
-## Example 9: Test State Transitions and Outcomes
+## Example 10: Test State Transitions and Outcomes
 
 ```ts
 import { describe, expect, it } from "vitest";
@@ -249,7 +313,7 @@ describe("transitionOrderState", () => {
 });
 ```
 
-## Example 10: Mock Only Unstable Boundaries
+## Example 11: Mock Only Unstable Boundaries
 
 ```ts
 import { expect, it, vi } from "vitest";
@@ -270,7 +334,7 @@ it("good: mocks only unstable network boundary and asserts behavior", async () =
 });
 ```
 
-## Example 11: Prefer Libraries That Align With Your Type Design
+## Example 12: Prefer Libraries That Align With Your Type Design
 
 ```ts
 // Bad: library returns `any` — caller must cast or assert at every access.
@@ -296,7 +360,7 @@ async function getUserName(userId: string): Promise<string> {
 }
 ```
 
-## Example 12: Re-implement When the Dependency Outweighs the Logic
+## Example 13: Re-implement When the Dependency Outweighs the Logic
 
 ```ts
 // Bad: importing a package for a one-liner adds supply-chain surface for no benefit.
@@ -312,7 +376,7 @@ const clamped = clamp(150, 0, 100);
 void clamped;
 ```
 
-## Example 13: External Contract Requires Looser Typing
+## Example 14: External Contract Requires Looser Typing
 
 ```ts
 // Bad: assumes external input already matches strict known values.

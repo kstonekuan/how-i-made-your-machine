@@ -10,13 +10,14 @@ Use this reference when applying the style guide to Rust code and a concrete exa
 - [Example 4: Return a Refined Type Instead of Void](#example-4-return-a-refined-type-instead-of-void)
 - [Example 5: Smart Constructors for Non-Structural Invariants](#example-5-smart-constructors-for-non-structural-invariants)
 - [Example 6: Outcome Variants on the Success Side](#example-6-outcome-variants-on-the-success-side)
-- [Example 7: Bulk Owns the Operation](#example-7-bulk-owns-the-operation)
-- [Example 8: Document the Why, Not the Obvious What](#example-8-document-the-why-not-the-obvious-what)
-- [Example 9: Test State Transitions and Outcomes](#example-9-test-state-transitions-and-outcomes)
-- [Example 10: Mock Only Unstable Boundaries](#example-10-mock-only-unstable-boundaries)
-- [Example 11: Prefer Libraries That Align With Your Type Design](#example-11-prefer-libraries-that-align-with-your-type-design)
-- [Example 12: Re-implement When the Dependency Outweighs the Logic](#example-12-re-implement-when-the-dependency-outweighs-the-logic)
-- [Example 13: External Contract Requires Looser Typing](#example-13-external-contract-requires-looser-typing)
+- [Example 7: Decide in the Core, Act in the Shell](#example-7-decide-in-the-core-act-in-the-shell)
+- [Example 8: Bulk Owns the Operation](#example-8-bulk-owns-the-operation)
+- [Example 9: Document the Why, Not the Obvious What](#example-9-document-the-why-not-the-obvious-what)
+- [Example 10: Test State Transitions and Outcomes](#example-10-test-state-transitions-and-outcomes)
+- [Example 11: Mock Only Unstable Boundaries](#example-11-mock-only-unstable-boundaries)
+- [Example 12: Prefer Libraries That Align With Your Type Design](#example-12-prefer-libraries-that-align-with-your-type-design)
+- [Example 13: Re-implement When the Dependency Outweighs the Logic](#example-13-re-implement-when-the-dependency-outweighs-the-logic)
+- [Example 14: External Contract Requires Looser Typing](#example-14-external-contract-requires-looser-typing)
 
 ## Example 1: Finite Value Set as Variants
 
@@ -210,7 +211,89 @@ let _ = (
 );
 ```
 
-## Example 7: Bulk Owns the Operation
+## Example 7: Decide in the Core, Act in the Shell
+
+```rust
+use std::time::{Duration, SystemTime};
+
+struct Subscription {
+    customer_id: String,
+    price_in_cents: u64,
+    expires_at: SystemTime,
+    auto_renews: bool,
+}
+
+const REMINDER_WINDOW: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+fn load_subscription(_subscription_id: &str) -> anyhow::Result<Subscription> {
+    anyhow::bail!("not implemented")
+}
+
+fn charge_customer(_customer_id: &str, _amount_in_cents: u64) -> anyhow::Result<()> {
+    Ok(())
+}
+
+fn send_renewal_reminder(_customer_id: &str) -> anyhow::Result<()> {
+    Ok(())
+}
+
+// Bad: decisions and effects are interleaved. Testing any branch needs a
+// fake database, clock, payment provider, and mailer.
+fn renew_subscription_under_modeled(subscription_id: &str) -> anyhow::Result<()> {
+    let subscription = load_subscription(subscription_id)?;
+    let time_until_expiry = subscription
+        .expires_at
+        .duration_since(SystemTime::now())
+        .unwrap_or(Duration::ZERO);
+    if subscription.auto_renews && time_until_expiry.is_zero() {
+        charge_customer(&subscription.customer_id, subscription.price_in_cents)?;
+    } else if !subscription.auto_renews && time_until_expiry <= REMINDER_WINDOW {
+        send_renewal_reminder(&subscription.customer_id)?;
+    }
+    Ok(())
+}
+
+// Good: the core is pure — values in, a decision out.
+enum RenewalDecision {
+    Charge { amount_in_cents: u64 },
+    SendReminder,
+    NoAction,
+}
+
+fn decide_renewal(subscription: &Subscription, now: SystemTime) -> RenewalDecision {
+    // duration_since fails once the expiry is in the past; treat that as zero time left.
+    let time_until_expiry = subscription
+        .expires_at
+        .duration_since(now)
+        .unwrap_or(Duration::ZERO);
+    if subscription.auto_renews && time_until_expiry.is_zero() {
+        RenewalDecision::Charge { amount_in_cents: subscription.price_in_cents }
+    } else if !subscription.auto_renews && time_until_expiry <= REMINDER_WINDOW {
+        RenewalDecision::SendReminder
+    } else {
+        RenewalDecision::NoAction
+    }
+}
+
+// The shell gathers inputs, asks the core, and performs the effect it names.
+fn renew_subscription(subscription_id: &str) -> anyhow::Result<()> {
+    let subscription = load_subscription(subscription_id)?;
+    match decide_renewal(&subscription, SystemTime::now()) {
+        RenewalDecision::Charge { amount_in_cents } => {
+            charge_customer(&subscription.customer_id, amount_in_cents)
+        }
+        RenewalDecision::SendReminder => send_renewal_reminder(&subscription.customer_id),
+        RenewalDecision::NoAction => Ok(()),
+    }
+}
+
+let _ = (
+    renew_subscription_under_modeled as fn(&str) -> anyhow::Result<()>,
+    renew_subscription as fn(&str) -> anyhow::Result<()>,
+);
+```
+
+## Example 8: Bulk Owns the Operation
 
 ```rust
 struct GroupId(String);
@@ -260,7 +343,7 @@ let _ = (
 );
 ```
 
-## Example 8: Document the Why, Not the Obvious What
+## Example 9: Document the Why, Not the Obvious What
 
 ```rust
 // Bad: restates obvious behavior.
@@ -279,7 +362,7 @@ fn is_refund_eligible(days_since_purchase: u32, refund_window_days: u32) -> bool
 let _ = increment_retry_count(0);
 ```
 
-## Example 9: Test State Transitions and Outcomes
+## Example 10: Test State Transitions and Outcomes
 
 ```rust
 #[test]
@@ -295,7 +378,7 @@ fn good_transitions_draft_to_published_when_publish_is_requested() {
 }
 ```
 
-## Example 10: Mock Only Unstable Boundaries
+## Example 11: Mock Only Unstable Boundaries
 
 ```rust
 #[test]
@@ -312,7 +395,7 @@ fn good_uses_cached_rate_when_live_lookup_fails() {
 }
 ```
 
-## Example 11: Prefer Libraries That Align With Your Type Design
+## Example 12: Prefer Libraries That Align With Your Type Design
 
 ```rust
 use serde::Deserialize;
@@ -337,7 +420,7 @@ fn get_user_name(user: &User) -> &str {
 let _ = get_user_name_under_modeled;
 ```
 
-## Example 12: Re-implement When the Dependency Outweighs the Logic
+## Example 13: Re-implement When the Dependency Outweighs the Logic
 
 ```rust
 // Bad: pulling in an external crate for something the standard library already provides.
@@ -349,7 +432,7 @@ let clamped = 150.0_f64.clamp(0.0, 100.0);
 let _ = clamped;
 ```
 
-## Example 13: External Contract Requires Looser Typing
+## Example 14: External Contract Requires Looser Typing
 
 ```rust
 // Bad: panics on unexpected partner status values.

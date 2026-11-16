@@ -16,6 +16,7 @@ It sets strong defaults, with room for justified exceptions when the tradeoff is
 - Use the type system and compiler as first-line quality gates.
 - Optimize for readable intent over clever implementation.
 - Parse external input into domain types at system boundaries; trust refined types downstream.
+- Keep decisions in pure functions that return values; perform I/O in a thin shell around them.
 - Test business behavior rather than framework or library internals.
 
 ## Type Safety and Relying on the Compiler
@@ -288,7 +289,7 @@ Alexis King's [Parse, Don't Validate](https://lexi-lambda.github.io/blog/2019/11
 
 Parse external input at system boundaries — user input, API responses, config files, webhook payloads — then pass the refined type through the rest of the system.
 Avoid scattering validation logic across business code (sometimes called "shotgun parsing"), where invalid input may be partially processed before being rejected.
-Example 13 in Exceptions shows a real-world instance of this pattern for partner webhooks.
+Example 14 in Exceptions shows a real-world instance of this pattern for partner webhooks.
 
 ### Example 4: Return a Refined Type Instead of Void
 
@@ -703,13 +704,270 @@ _ = (fetch_user_under_modeled, handle_request)
   </TabItem>
 </Tabs>
 
+## Functional Core, Imperative Shell
+
+Parsing at boundaries governs how data comes in. This governs how effects go out.
+
+Keep decisions in pure functions that take values and return values.
+Push I/O — database, network, clock, filesystem — into a thin shell that gathers inputs, calls the core, and carries out what it returns.
+
+- The core never performs I/O. It returns a value describing what should happen, ideally a variant the shell matches exhaustively.
+- Pass the current time, random values, and loaded records into the core as arguments instead of fetching them inside it.
+- The shell has few branches of its own: load, ask the core, perform the result.
+
+The core can then be tested with plain values and no mocks, and the shell is simple enough that a few integration tests cover it.
+
+For the full walkthrough, watch Gary Bernhardt's [Functional Core, Imperative Shell](https://www.destroyallsoftware.com/screencasts/catalog/functional-core-imperative-shell).
+
+### Example 7: Decide in the Core, Act in the Shell
+
+<Tabs groupId="functional-core-imperative-shell">
+  <TabItem value="pseudocode" label="Pseudocode" default>
+
+```text
+Interleaved:
+  renew_subscription(id):
+    subscription = database.load(id)
+    if expired(subscription, clock.now()): payment.charge(...)
+    else if expiring_soon(...): email.send_reminder(...)
+  every branch needs a fake database, clock, payment provider, and mailer to test
+
+Separated:
+  decide_renewal(subscription, now) -> Charge(amount) | SendReminder | NoAction   // pure
+  renew_subscription(id):                                                         // shell
+    decision = decide_renewal(database.load(id), clock.now())
+    match decision and perform the one effect it names
+```
+
+  </TabItem>
+  <TabItem value="typescript" label="TypeScript">
+
+```ts
+interface Subscription {
+  customerId: string;
+  priceInCents: number;
+  expiresAt: Date;
+  autoRenews: boolean;
+}
+
+declare function loadSubscription(subscriptionId: string): Promise<Subscription>;
+declare function chargeCustomer(customerId: string, amountInCents: number): Promise<void>;
+declare function sendRenewalReminder(customerId: string): Promise<void>;
+
+const REMINDER_WINDOW_IN_MILLISECONDS = 7 * 24 * 60 * 60 * 1000;
+
+// Bad: decisions and effects are interleaved. Testing any branch needs a
+// fake database, clock, payment provider, and mailer.
+async function renewSubscriptionUnderModeled(subscriptionId: string): Promise<void> {
+  const subscription = await loadSubscription(subscriptionId);
+  const millisecondsUntilExpiry = subscription.expiresAt.getTime() - Date.now();
+  if (subscription.autoRenews && millisecondsUntilExpiry <= 0) {
+    await chargeCustomer(subscription.customerId, subscription.priceInCents);
+  } else if (!subscription.autoRenews && millisecondsUntilExpiry <= REMINDER_WINDOW_IN_MILLISECONDS) {
+    await sendRenewalReminder(subscription.customerId);
+  }
+}
+
+// Good: the core is pure — values in, a decision out.
+type RenewalDecision =
+  | { kind: "Charge"; amountInCents: number }
+  | { kind: "SendReminder" }
+  | { kind: "NoAction" };
+
+function decideRenewal(subscription: Subscription, now: Date): RenewalDecision {
+  const millisecondsUntilExpiry = subscription.expiresAt.getTime() - now.getTime();
+  if (subscription.autoRenews && millisecondsUntilExpiry <= 0) {
+    return { kind: "Charge", amountInCents: subscription.priceInCents };
+  }
+  if (!subscription.autoRenews && millisecondsUntilExpiry <= REMINDER_WINDOW_IN_MILLISECONDS) {
+    return { kind: "SendReminder" };
+  }
+  return { kind: "NoAction" };
+}
+
+// The shell gathers inputs, asks the core, and performs the effect it names.
+async function renewSubscription(subscriptionId: string): Promise<void> {
+  const subscription = await loadSubscription(subscriptionId);
+  const decision = decideRenewal(subscription, new Date());
+  switch (decision.kind) {
+    case "Charge":
+      return chargeCustomer(subscription.customerId, decision.amountInCents);
+    case "SendReminder":
+      return sendRenewalReminder(subscription.customerId);
+    case "NoAction":
+      return;
+  }
+}
+
+void renewSubscriptionUnderModeled;
+void renewSubscription;
+```
+
+  </TabItem>
+  <TabItem value="rust" label="Rust">
+
+```rust
+use std::time::{Duration, SystemTime};
+
+struct Subscription {
+    customer_id: String,
+    price_in_cents: u64,
+    expires_at: SystemTime,
+    auto_renews: bool,
+}
+
+const REMINDER_WINDOW: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+fn load_subscription(_subscription_id: &str) -> anyhow::Result<Subscription> {
+    anyhow::bail!("not implemented")
+}
+
+fn charge_customer(_customer_id: &str, _amount_in_cents: u64) -> anyhow::Result<()> {
+    Ok(())
+}
+
+fn send_renewal_reminder(_customer_id: &str) -> anyhow::Result<()> {
+    Ok(())
+}
+
+// Bad: decisions and effects are interleaved. Testing any branch needs a
+// fake database, clock, payment provider, and mailer.
+fn renew_subscription_under_modeled(subscription_id: &str) -> anyhow::Result<()> {
+    let subscription = load_subscription(subscription_id)?;
+    let time_until_expiry = subscription
+        .expires_at
+        .duration_since(SystemTime::now())
+        .unwrap_or(Duration::ZERO);
+    if subscription.auto_renews && time_until_expiry.is_zero() {
+        charge_customer(&subscription.customer_id, subscription.price_in_cents)?;
+    } else if !subscription.auto_renews && time_until_expiry <= REMINDER_WINDOW {
+        send_renewal_reminder(&subscription.customer_id)?;
+    }
+    Ok(())
+}
+
+// Good: the core is pure — values in, a decision out.
+enum RenewalDecision {
+    Charge { amount_in_cents: u64 },
+    SendReminder,
+    NoAction,
+}
+
+fn decide_renewal(subscription: &Subscription, now: SystemTime) -> RenewalDecision {
+    // duration_since fails once the expiry is in the past; treat that as zero time left.
+    let time_until_expiry = subscription
+        .expires_at
+        .duration_since(now)
+        .unwrap_or(Duration::ZERO);
+    if subscription.auto_renews && time_until_expiry.is_zero() {
+        RenewalDecision::Charge { amount_in_cents: subscription.price_in_cents }
+    } else if !subscription.auto_renews && time_until_expiry <= REMINDER_WINDOW {
+        RenewalDecision::SendReminder
+    } else {
+        RenewalDecision::NoAction
+    }
+}
+
+// The shell gathers inputs, asks the core, and performs the effect it names.
+fn renew_subscription(subscription_id: &str) -> anyhow::Result<()> {
+    let subscription = load_subscription(subscription_id)?;
+    match decide_renewal(&subscription, SystemTime::now()) {
+        RenewalDecision::Charge { amount_in_cents } => {
+            charge_customer(&subscription.customer_id, amount_in_cents)
+        }
+        RenewalDecision::SendReminder => send_renewal_reminder(&subscription.customer_id),
+        RenewalDecision::NoAction => Ok(()),
+    }
+}
+
+let _ = (
+    renew_subscription_under_modeled as fn(&str) -> anyhow::Result<()>,
+    renew_subscription as fn(&str) -> anyhow::Result<()>,
+);
+```
+
+  </TabItem>
+  <TabItem value="python" label="Python">
+
+```python
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+
+@dataclass(frozen=True)
+class Subscription:
+    customer_id: str
+    price_in_cents: int
+    expires_at: datetime
+    auto_renews: bool
+
+REMINDER_WINDOW = timedelta(days=7)
+
+def load_subscription(subscription_id: str) -> Subscription:
+    raise NotImplementedError(subscription_id)
+
+def charge_customer(customer_id: str, amount_in_cents: int) -> None:
+    _ = (customer_id, amount_in_cents)
+
+def send_renewal_reminder(customer_id: str) -> None:
+    _ = customer_id
+
+# Bad: decisions and effects are interleaved. Testing any branch needs a
+# fake database, clock, payment provider, and mailer.
+def renew_subscription_under_modeled(subscription_id: str) -> None:
+    subscription = load_subscription(subscription_id)
+    time_until_expiry = subscription.expires_at - datetime.now()
+    if subscription.auto_renews and time_until_expiry <= timedelta(0):
+        charge_customer(subscription.customer_id, subscription.price_in_cents)
+    elif not subscription.auto_renews and time_until_expiry <= REMINDER_WINDOW:
+        send_renewal_reminder(subscription.customer_id)
+
+# Good: the core is pure — values in, a decision out.
+@dataclass(frozen=True)
+class Charge:
+    amount_in_cents: int
+
+@dataclass(frozen=True)
+class SendReminder:
+    pass
+
+@dataclass(frozen=True)
+class NoAction:
+    pass
+
+RenewalDecision = Charge | SendReminder | NoAction
+
+def decide_renewal(subscription: Subscription, now: datetime) -> RenewalDecision:
+    time_until_expiry = subscription.expires_at - now
+    if subscription.auto_renews and time_until_expiry <= timedelta(0):
+        return Charge(subscription.price_in_cents)
+    if not subscription.auto_renews and time_until_expiry <= REMINDER_WINDOW:
+        return SendReminder()
+    return NoAction()
+
+# The shell gathers inputs, asks the core, and performs the effect it names.
+def renew_subscription(subscription_id: str) -> None:
+    subscription = load_subscription(subscription_id)
+    match decide_renewal(subscription, datetime.now()):
+        case Charge(amount_in_cents):
+            charge_customer(subscription.customer_id, amount_in_cents)
+        case SendReminder():
+            send_renewal_reminder(subscription.customer_id)
+        case NoAction():
+            pass
+
+_ = (renew_subscription_under_modeled, renew_subscription)
+```
+
+  </TabItem>
+</Tabs>
+
 ## Single Source of Truth for Behavior
 
 When the same operation is exposed through more than one entry point — a single-target endpoint and a bulk endpoint, an internal API and a CLI wrapper, a UI button and a background job — write the operation once and have the other entry points wrap it.
 
 The risk isn't repetition for its own sake. It's that the two paths share a contract today and silently drift tomorrow. A new validation, a new audit hook, a new lock acquisition — added to one path, forgotten on the other. Both paths still type-check, so the compiler won't catch the divergence.
 
-Pick one path as the core. Have it own validation, locking, mutation, and persistence, and return domain values rather than transport-shaped responses so non-HTTP callers (tests, jobs, scripts) can use it directly. The other entry points become thin wrappers that adapt arguments and shape responses.
+Pick one path as the shared operation. Have it own validation, locking, mutation, and persistence, and return domain values rather than transport-shaped responses so non-HTTP callers (tests, jobs, scripts) can use it directly. The other entry points become thin wrappers that adapt arguments and shape responses.
 
 For bulk-as-core specifically, decide the atomicity model deliberately and let the return type carry it:
 
@@ -720,7 +978,7 @@ Mirror the factoring on the client: `push(item)` becomes `push_bulk([item])`.
 
 **When to skip**: operations that aren't really CRUD over a uniform resource set — side-effecting RPCs with per-call identity (`charge_card`, `send_email_now`), or endpoints whose only realistic caller is a one-at-a-time human action with no bulk equivalent in sight. Forcing a list shape on those obscures intent without preventing any drift.
 
-### Example 7: Bulk Owns the Operation
+### Example 8: Bulk Owns the Operation
 
 <Tabs groupId="single-source-behavior">
   <TabItem value="pseudocode" label="Pseudocode" default>
@@ -890,7 +1148,7 @@ Comments go stale quickly, while clear naming and structure have to evolve with 
 - Add comments only for non-obvious decisions, invariants, or tradeoffs.
 - Avoid comments that restate what code already makes obvious.
 
-### Example 8: Document the Why, Not the Obvious What
+### Example 9: Document the Why, Not the Obvious What
 
 <Tabs groupId="documenting-why">
   <TabItem value="pseudocode" label="Pseudocode" default>
@@ -979,8 +1237,9 @@ But we should avoid writing tests for the sake of writing tests: they add mainte
 - Avoid mocks by default.
 - Use mocks only for unstable boundaries (network, filesystem, time, OS/process boundaries).
 - Assert externally meaningful behavior, not private implementation details.
+- Structure code as a functional core and imperative shell so most logic is testable with plain values and no mocks.
 
-### Example 9: Test State Transitions and Outcomes
+### Example 10: Test State Transitions and Outcomes
 
 <Tabs groupId="testing-behavior">
   <TabItem value="pseudocode" label="Pseudocode" default>
@@ -1048,7 +1307,7 @@ def test_good_transition_order_state_moves_draft_to_published() -> None:
   </TabItem>
 </Tabs>
 
-### Example 10: Mock Only Unstable Boundaries
+### Example 11: Mock Only Unstable Boundaries
 
 <Tabs groupId="testing-mocks">
   <TabItem value="pseudocode" label="Pseudocode" default>
@@ -1149,7 +1408,7 @@ one.
 - If you would need to wrap the library in adapter types to make it fit your
   domain model, weigh whether the library is saving you work or creating it.
 
-### Example 11: Prefer Libraries That Align With Your Type Design
+### Example 12: Prefer Libraries That Align With Your Type Design
 
 <Tabs groupId="dependency-alignment">
   <TabItem value="pseudocode" label="Pseudocode" default>
@@ -1242,7 +1501,7 @@ def get_user_name(user: User) -> str:
   </TabItem>
 </Tabs>
 
-### Example 12: Re-implement When the Dependency Outweighs the Logic
+### Example 13: Re-implement When the Dependency Outweighs the Logic
 
 <Tabs groupId="dependency-vs-reimplement">
   <TabItem value="pseudocode" label="Pseudocode" default>
@@ -1334,7 +1593,7 @@ When we take an exception, we should document:
 - Why
 - Which safeguards are in place (validation, logging, tests)
 
-### Example 13: External Contract Requires Looser Typing
+### Example 14: External Contract Requires Looser Typing
 
 <Tabs groupId="exceptions">
   <TabItem value="pseudocode" label="Pseudocode" default>

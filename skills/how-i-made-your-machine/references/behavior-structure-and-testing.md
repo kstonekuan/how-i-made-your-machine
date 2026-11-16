@@ -1,6 +1,18 @@
 # Behavior, Structure, and Testing
 
-Use these rules when several entry points share an operation, when naming or commenting code, and when designing tests.
+Use these rules when separating pure logic from side effects, when several entry points share an operation, when naming or commenting code, and when designing tests.
+
+## Separate pure decisions from side effects
+
+Keep decisions in pure functions that take values and return values. Put I/O (database, network, clock, filesystem) in a thin shell that gathers inputs, calls the core, and performs what it returns.
+
+- Return a value describing what should happen, ideally a variant the shell matches exhaustively.
+- Pass time, randomness, and loaded records into the core as arguments instead of fetching them inside it.
+- Keep the shell nearly branch-free: load, decide, perform.
+
+The core is then testable with plain values and no mocks. A shared operation from the next section is a shell entry point that calls this core.
+
+For the full rationale, see Gary Bernhardt's [Functional Core, Imperative Shell](https://www.destroyallsoftware.com/screencasts/catalog/functional-core-imperative-shell). A concrete example is in the language examples reference.
 
 ## Keep one source of truth for behavior
 
@@ -13,7 +25,7 @@ Examples include:
 - User-interface actions and background jobs
 - Public functions and internal wrappers
 
-The core operation should own shared validation, locking, mutation, and persistence. Return domain values instead of transport-specific responses so every adapter can use it.
+The shared operation should own shared validation, locking, mutation, and persistence. Return domain values instead of transport-specific responses so every adapter can use it.
 
 ```text
 add_users(group, users) owns the operation
