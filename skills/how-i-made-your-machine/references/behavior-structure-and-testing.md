@@ -32,12 +32,14 @@ add_users(group, users) owns the operation
 add_user(group, user) delegates to add_users(group, [user])
 ```
 
+When a one-item batch has the same semantics as a single-item call, pass a one-element collection to the shared operation and adapt its result to the single-item contract. This also applies to shared SDK behavior such as waiting for completion and handling cancellation.
+
 For bulk operations, choose the atomicity model deliberately and express it in the return type:
 
 - Atomic operations succeed completely or report where they failed.
 - Tolerant operations report applied and rejected items explicitly.
 
-Do not force a bulk shape onto side-effecting operations with distinct per-call identity, such as charging a card or sending an immediate email, when no shared bulk contract exists.
+If the entry points differ in validation, side effects, or failure behavior, keep those differences at their entry points and share the steps with the same contract.
 
 ## Write self-documenting code
 

@@ -969,14 +969,12 @@ The risk isn't repetition for its own sake. It's that the two paths share a cont
 
 Pick one path as the shared operation. Have it own validation, locking, mutation, and persistence, and return domain values rather than transport-shaped responses so non-HTTP callers (tests, jobs, scripts) can use it directly. The other entry points become thin wrappers that adapt arguments and shape responses.
 
-For bulk-as-core specifically, decide the atomicity model deliberately and let the return type carry it:
+**Treat one item as a special case of many.** When a one-item batch preserves the single-item contract, pass a one-element collection to the shared operation and adapt its result. If the calls differ in validation, side effects, or failure behavior, share only the steps with the same contract.
+
+For bulk operations, decide the atomicity model deliberately and let the return type carry it:
 
 - **Atomic** — succeed entirely or fail with a failed-index. Returns something like `Result<(), { failedAt: number, reason: ... }>`.
 - **Tolerant** — return applied and missing lists, letting the caller act on partial success. Returns something like `{ applied: T[], missing: { item: T, reason: ... }[] }`.
-
-Mirror the factoring on the client: `push(item)` becomes `push_bulk([item])`.
-
-**When to skip**: operations that aren't really CRUD over a uniform resource set — side-effecting RPCs with per-call identity (`charge_card`, `send_email_now`), or endpoints whose only realistic caller is a one-at-a-time human action with no bulk equivalent in sight. Forcing a list shape on those obscures intent without preventing any drift.
 
 ### Example 8: Bulk Owns the Operation
 

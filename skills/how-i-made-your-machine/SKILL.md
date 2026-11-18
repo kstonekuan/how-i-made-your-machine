@@ -70,6 +70,7 @@ Read the matching language examples when an example would materially help implem
 - Put decisions in pure functions that return variants; keep I/O in a thin shell that performs what they return.
 - Centralize shared validation, locking, mutation, and persistence in one shared operation.
 - Keep adapters and alternate entry points thin.
+- Treat one item as a one-element collection when single-item and bulk calls share a contract.
 - Use descriptive, domain-aligned names even when they are verbose.
 - Comment decisions, invariants, and tradeoffs; do not restate obvious code.
 - Test observable state transitions, outputs, defaults, and fallbacks.
